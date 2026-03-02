@@ -3,8 +3,16 @@ const app = express();
 const port = 8080;
 const methodOverride = require('method-override');
 app.use(methodOverride('_method'));
+const Post = require('./models/post.js');
+const mongoose = require('mongoose');
 
-const { v4: uuidv4 } = require('uuid');
+async function main(){
+    await mongoose.connect('mongodb://127.0.0.1:27017/posts');
+}
+
+main().then(() => {
+    console.log("Connected to MongoDB");
+}).catch(err => console.log(err));
 
 const path = require('path');
 
@@ -15,27 +23,9 @@ app.set("views", path.join(__dirname, "views"));
 
 app.use(express.static(path.join(__dirname, "public")));
 
-let posts = [
-    {
-        id: uuidv4(),
-        username: "Khushi",
-        content: "Success is not final, failure is not fatal"
-    },
 
-    {
-        id: uuidv4(),
-        username: "pathlylabs",
-        content: "Tech is the future, embrace it!"
-    },
-
-    {
-        id: uuidv4(),
-        username: "Siddhi",
-        content: "Believe you can and you're halfway there."
-    },
-];
-
-app.get("/posts",(req, res) =>{ //index route
+app.get("/posts", async (req, res) =>{ //index route
+    let posts = await Post.find({});
     res.render("index.ejs", {posts});
 });
 
@@ -45,37 +35,39 @@ app.get("/posts/new", (req, res) =>{ //new route
 
 app.post("/posts", (req, res) =>{ //create route
     let {username, content} = req.body;
-    let id = uuidv4();
-    posts.push({id, username, content});
+    let posts = new Post({username : username, content:content});
+
+    posts.save().then(() => {
+        console.log("Post saved to database");
+    }).catch(err => console.log(err));  
     
     res.redirect("/posts");
 });
 
-app.get("/posts/:id", (req, res) => {
+app.get("/posts/:id", async (req, res) => {
     let {id} = req.params;
     console.log(id);
-    let post = posts.find(p => p.id === id);
+    let post = await Post.findById(id);
     res.render("show.ejs", {post});
 });
 
-app.patch("/posts/:id", (req, res) => {
+app.patch("/posts/:id", async(req, res) => {
     let {id} = req.params;
     let newcontent = req.body.content;
-    let post = posts.find(p => p.id === id);
-    post.content = newcontent;
+    let post = await Post.findByIdAndUpdate(id, {content: newcontent}, {new: true});
     console.log(post);
     res.redirect("/posts");
 });
 
-app.get("/posts/:id/edit", (req, res) => {
+app.get("/posts/:id/edit", async (req, res) => {
     let {id} = req.params;
-    let post = posts.find(p => p.id === id);
+    let post = await Post.findById(id);
     res.render("edit.ejs", {post});
 });
 
-app.delete("/posts/:id", (req, res) => {
+app.delete("/posts/:id", async (req, res) => {
     let {id} = req.params;
-    posts = posts.filter(p => p.id !== id);
+    await Post.findByIdAndDelete(id);
     res.redirect("/posts");
 });
 
