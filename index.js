@@ -6,11 +6,14 @@ const session = require('express-session');
 const bcrypt = require('bcryptjs');
 const path = require('path');
 const mongoose = require('mongoose');
+const https = require('https');
+const http = require('http');
 const Post = require('./models/post.js');
 const User = require('./models/user.js');
 require('dotenv').config();
 
 const MONGO_URL = process.env.MONGO_URL;
+const PUBLIC_URL = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
 
 async function main() {
     await mongoose.connect(MONGO_URL);
@@ -282,18 +285,33 @@ app.delete('/posts/:id', isAuthenticated, async (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`listening on port ${PORT}`);
+    console.log(`Public URL for pinging: ${PUBLIC_URL}`);
     
-    // Self-ping to keep app alive on Render
-    setInterval(() => {
-        const http = require('http');
-        const pingUrl = `http://localhost:${PORT}/health`;
+    // Self-ping to keep app alive on Render - starts after 1 minute
+    setTimeout(() => {
+        console.log('Starting self-ping mechanism...');
         
-        http.get(pingUrl, (res) => {
-            if (res.statusCode === 200) {
-                console.log(`[${new Date().toISOString()}] App pinged successfully - staying alive`);
+        setInterval(() => {
+            try {
+                const pingUrl = `${PUBLIC_URL}/health`;
+                const client = pingUrl.startsWith('https') ? https : http;
+                
+                const request = client.get(pingUrl, { timeout: 5000 }, (response) => {
+                    console.log(`[${new Date().toISOString()}] ✓ Ping successful (Status: ${response.statusCode}) - App staying alive`);
+                });
+                
+                request.on('error', (error) => {
+                    console.error(`[${new Date().toISOString()}] ✗ Ping failed: ${error.message}`);
+                });
+                
+                request.on('timeout', () => {
+                    request.destroy();
+                    console.error(`[${new Date().toISOString()}] ✗ Ping timeout`);
+                });
+                
+            } catch (error) {
+                console.error(`[${new Date().toISOString()}] ✗ Ping error: ${error.message}`);
             }
-        }).on('error', (err) => {
-            console.log(`Ping error: ${err.message}`);
-        });
-    }, 5 * 60 * 1000); // Ping every 5 minutes
+        }, 4 * 60 * 1000); // Ping every 4 minutes
+    }, 60 * 1000); // Start pinging after 1 minute
 });
