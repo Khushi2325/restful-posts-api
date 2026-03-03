@@ -2,79 +2,277 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 8080;
 const methodOverride = require('method-override');
-app.use(methodOverride('_method'));
-const Post = require('./models/post.js');
+const session = require('express-session');
+const bcrypt = require('bcryptjs');
+const path = require('path');
 const mongoose = require('mongoose');
-require("dotenv").config();
+const Post = require('./models/post.js');
+const User = require('./models/user.js');
+require('dotenv').config();
 
 const MONGO_URL = process.env.MONGO_URL;
 
-async function main(){
+async function main() {
     await mongoose.connect(MONGO_URL);
 }
 
 main().then(() => {
-    console.log("Connected to MongoDB");
+    console.log('Connected to MongoDB');
 }).catch(err => console.log(err));
 
-const path = require('path');
-
 app.use(express.urlencoded({ extended: true }));
+app.use(methodOverride('_method'));
+app.use(express.static(path.join(__dirname, 'public')));
 
-app.set("view engine", "ejs");
-app.set("views", path.join(__dirname, "views"));
+// Session configuration
+app.use(session({
+    secret: 'pathlylab-secret-key-2026',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { maxAge: 24 * 60 * 60 * 1000 }
+}));
 
-app.use(express.static(path.join(__dirname, "public")));
-
-
-app.get("/", (req, res) => {
-    res.redirect("/posts");
-});
-app.get("/posts", async (req, res) =>{ //index route
-    let posts = await Post.find({});
-    res.render("index.ejs", {posts});
-});
-
-app.get("/posts/new", (req, res) =>{ //new route
-    res.render("new.ejs");
-});
-
-app.post("/posts", (req, res) =>{ //create route
-    let {username, content} = req.body;
-    let posts = new Post({username : username, content:content});
-
-    posts.save().then(() => {
-        console.log("Post saved to database");
-    }).catch(err => console.log(err));  
-    
-    res.redirect("/posts");
+// Expose current user to templates
+app.use((req, res, next) => {
+    if (req.session.userId) {
+        res.locals.currentUser = {
+            username: req.session.username,
+            email: req.session.email,
+            id: req.session.userId.toString()
+        };
+        res.locals.userId = req.session.userId.toString();
+    } else {
+        res.locals.currentUser = null;
+        res.locals.userId = null;
+    }
+    next();
 });
 
-app.get("/posts/:id", async (req, res) => {
-    let {id} = req.params;
-    console.log(id);
-    let post = await Post.findById(id);
-    res.render("show.ejs", {post});
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+
+// Auth guard
+const isAuthenticated = (req, res, next) => {
+    if (req.session.userId) return next();
+    return res.redirect('/login');
+};
+
+// Home route
+app.get('/', (req, res) => {
+    res.render('home.ejs', { currentUser: res.locals.currentUser });
 });
 
-app.patch("/posts/:id", async(req, res) => {
-    let {id} = req.params;
-    let newcontent = req.body.content;
-    let post = await Post.findByIdAndUpdate(id, {content: newcontent}, {new: true});
-    console.log(post);
-    res.redirect("/posts");
+// Register routes
+app.get('/register', (req, res) => {
+    res.render('register.ejs');
 });
 
-app.get("/posts/:id/edit", async (req, res) => {
-    let {id} = req.params;
-    let post = await Post.findById(id);
-    res.render("edit.ejs", {post});
+app.post('/register', async (req, res) => {
+    try {
+        const { username, email, password } = req.body;
+        const trimmedUsername = username.trim();
+        const normalizedEmail = email.trim().toLowerCase();
+
+        const existingUser = await User.findOne({ $or: [{ username: trimmedUsername }, { email: normalizedEmail }] });
+        if (existingUser) {
+            return res.render('register.ejs', { error: 'Username or email already exists' });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        const user = new User({
+            username: trimmedUsername,
+            email: normalizedEmail,
+            password: hashedPassword
+        });
+
+        await user.save();
+
+        req.session.userId = user._id;
+        req.session.username = user.username;
+        req.session.email = user.email;
+
+        res.redirect('/posts');
+    } catch (err) {
+        console.log(err);
+        res.render('register.ejs', { error: 'Registration failed. Please try again.' });
+    }
 });
 
-app.delete("/posts/:id", async (req, res) => {
-    let {id} = req.params;
-    await Post.findByIdAndDelete(id);
-    res.redirect("/posts");
+// Login routes
+app.get('/login', (req, res) => {
+    res.render('login.ejs');
+});
+
+app.post('/login', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        const trimmedUsername = username.trim();
+
+        const user = await User.findOne({ username: trimmedUsername });
+        if (!user) {
+            return res.render('login.ejs', { error: 'Invalid username or password' });
+        }
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.render('login.ejs', { error: 'Invalid username or password' });
+        }
+
+        req.session.userId = user._id;
+        req.session.username = user.username;
+        req.session.email = user.email;
+
+        res.redirect('/posts');
+    } catch (err) {
+        console.log(err);
+        res.render('login.ejs', { error: 'Login failed. Please try again.' });
+    }
+});
+
+// Logout route
+app.get('/logout', (req, res) => {
+    req.session.destroy((err) => {
+        if (err) {
+            console.log(err);
+        }
+        res.redirect('/');
+    });
+});
+
+// Posts index
+app.get('/posts', isAuthenticated, async (req, res) => {
+    try {
+        const rawPosts = await Post.find({}).sort({ createdAt: -1 }).lean();
+        const posts = rawPosts.map((p) => {
+            const createdSource = p.createdAt || (p._id && p._id.getTimestamp ? p._id.getTimestamp() : null);
+            const displayDate = createdSource
+                ? createdSource.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+                : 'Just now';
+            return { ...p, id: p._id.toString(), displayDate };
+        });
+
+        res.render('index.ejs', { posts, currentUser: res.locals.currentUser, userId: res.locals.userId });
+    } catch (err) {
+        console.log(err);
+        res.status(500).send('Unable to fetch posts right now.');
+    }
+});
+
+// New post form
+app.get('/posts/new', isAuthenticated, (req, res) => {
+    res.render('new.ejs', { currentUser: res.locals.currentUser });
+});
+
+// Create post
+app.post('/posts', isAuthenticated, async (req, res) => {
+    try {
+        const content = req.body.content ? req.body.content.trim() : '';
+        if (!content) {
+            return res.status(400).send('Content cannot be empty.');
+        }
+
+        const post = new Post({
+            username: req.session.username,
+            content,
+            userId: req.session.userId
+        });
+
+        await post.save();
+        res.redirect('/posts');
+    } catch (err) {
+        console.log(err);
+        res.status(500).send('Unable to create post right now.');
+    }
+});
+
+// Show post
+app.get('/posts/:id', isAuthenticated, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const post = await Post.findById(id).lean();
+        if (!post) {
+            return res.status(404).send('Post not found.');
+        }
+
+        const createdSource = post.createdAt || (post._id && post._id.getTimestamp ? post._id.getTimestamp() : null);
+        const displayDate = createdSource
+            ? createdSource.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+            : 'Just now';
+
+        const isOwner = post.userId && req.session.userId && post.userId.toString() === req.session.userId.toString();
+        res.render('show.ejs', { post: { ...post, id: post._id.toString(), displayDate }, currentUser: res.locals.currentUser, isOwner });
+    } catch (err) {
+        console.log(err);
+        res.status(500).send('Unable to load that post right now.');
+    }
+});
+
+// Update post
+app.patch('/posts/:id', isAuthenticated, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const post = await Post.findById(id);
+        if (!post) {
+            return res.status(404).send('Post not found.');
+        }
+
+        if (!post.userId || post.userId.toString() !== req.session.userId.toString()) {
+            return res.status(403).send('You can only edit your own posts');
+        }
+
+        const newContent = req.body.content ? req.body.content.trim() : '';
+        if (!newContent) {
+            return res.status(400).send('Updated content cannot be empty.');
+        }
+
+        await Post.findByIdAndUpdate(id, { content: newContent }, { new: true });
+        res.redirect('/posts');
+    } catch (err) {
+        console.log(err);
+        res.status(500).send('Unable to update that post right now.');
+    }
+});
+
+// Edit form
+app.get('/posts/:id/edit', isAuthenticated, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const post = await Post.findById(id);
+        if (!post) {
+            return res.status(404).send('Post not found.');
+        }
+
+        if (!post.userId || post.userId.toString() !== req.session.userId.toString()) {
+            return res.status(403).send('You can only edit your own posts');
+        }
+
+        res.render('edit.ejs', { post: { ...post.toObject(), id: post._id.toString() }, currentUser: res.locals.currentUser });
+    } catch (err) {
+        console.log(err);
+        res.status(500).send('Unable to load the edit form right now.');
+    }
+});
+
+// Delete post
+app.delete('/posts/:id', isAuthenticated, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const post = await Post.findById(id);
+        if (!post) {
+            return res.status(404).send('Post not found.');
+        }
+
+        if (!post.userId || post.userId.toString() !== req.session.userId.toString()) {
+            return res.status(403).send('You can only delete your own posts');
+        }
+
+        await Post.findByIdAndDelete(id);
+        res.redirect('/posts');
+    } catch (err) {
+        console.log(err);
+        res.status(500).send('Unable to delete that post right now.');
+    }
 });
 
 app.listen(PORT, () => {
