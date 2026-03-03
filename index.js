@@ -5,15 +5,30 @@ const methodOverride = require('method-override');
 const session = require('express-session');
 const bcrypt = require('bcryptjs');
 const path = require('path');
+const fs = require('fs');
 const mongoose = require('mongoose');
 const https = require('https');
 const http = require('http');
+
+// Configure dotenv with explicit path
+const envPath = path.resolve(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+    require('dotenv').config({ path: envPath });
+} else {
+    console.warn(`.env file not found at ${envPath}`);
+    require('dotenv').config();
+}
+
 const Post = require('./models/post.js');
 const User = require('./models/user.js');
-require('dotenv').config();
 
-const MONGO_URL = process.env.MONGO_URL;
-const PUBLIC_URL = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
+const MONGO_URL = process.env.MONGO_URL || 'mongodb+srv://KhushiKC:Khushi%40123@pathly-posts.adep9ts.mongodb.net/?appName=pathly-posts';
+const PUBLIC_URL = process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || 'https://pathlylab-posts.onrender.com';
+
+console.log('Environment check:', {
+    MONGO_URL: MONGO_URL ? '✓ Loaded' : '✗ Missing',
+    PUBLIC_URL: PUBLIC_URL ? '✓ Loaded' : '✗ Missing'
+});
 
 async function main() {
     await mongoose.connect(MONGO_URL);
@@ -149,10 +164,7 @@ app.get('/posts', isAuthenticated, async (req, res) => {
         const rawPosts = await Post.find({}).sort({ createdAt: -1 }).lean();
         const posts = rawPosts.map((p) => {
             const createdSource = p.createdAt || (p._id && p._id.getTimestamp ? p._id.getTimestamp() : null);
-            const displayDate = createdSource
-                ? createdSource.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
-                : 'Just now';
-            return { ...p, id: p._id.toString(), displayDate };
+            return { ...p, id: p._id.toString(), createdAt: createdSource };
         });
 
         res.render('index.ejs', { posts, currentUser: res.locals.currentUser, userId: res.locals.userId });
@@ -199,12 +211,8 @@ app.get('/posts/:id', isAuthenticated, async (req, res) => {
         }
 
         const createdSource = post.createdAt || (post._id && post._id.getTimestamp ? post._id.getTimestamp() : null);
-        const displayDate = createdSource
-            ? createdSource.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
-            : 'Just now';
-
         const isOwner = post.userId && req.session.userId && post.userId.toString() === req.session.userId.toString();
-        res.render('show.ejs', { post: { ...post, id: post._id.toString(), displayDate }, currentUser: res.locals.currentUser, isOwner });
+        res.render('show.ejs', { post: { ...post, id: post._id.toString(), createdAt: createdSource }, currentUser: res.locals.currentUser, isOwner });
     } catch (err) {
         console.log(err);
         res.status(500).send('Unable to load that post right now.');
@@ -250,7 +258,7 @@ app.get('/posts/:id/edit', isAuthenticated, async (req, res) => {
             return res.status(403).send('You can only edit your own posts');
         }
 
-        res.render('edit.ejs', { post: { ...post.toObject(), id: post._id.toString() }, currentUser: res.locals.currentUser });
+        res.render('edit.ejs', { post: { ...post.toObject(), id: post._id.toString(), createdAt: post.createdAt }, currentUser: res.locals.currentUser });
     } catch (err) {
         console.log(err);
         res.status(500).send('Unable to load the edit form right now.');
